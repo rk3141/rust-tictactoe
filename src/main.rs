@@ -1,6 +1,7 @@
+use std::env::args;
 use std::{fmt::Display, io::stdin};
 
-use termion::{color, style};
+use termion::{clear, color, style};
 extern crate termion;
 
 fn clean_term() {
@@ -102,38 +103,149 @@ impl TicTacToe {
     }
 }
 
-fn main() {
+fn process_net_input(input: &String) -> (usize, usize) {
+    let words: Vec<_> = input.trim().split_whitespace().collect();
+
+    let y = words[0].parse().unwrap();
+    let x = words[1].parse().unwrap();
+    (x, y)
+}
+
+use std::io::{BufRead, BufReader, Error, Write};
+use std::net::{Ipv4Addr, SocketAddrV4, TcpListener, TcpStream};
+fn main() -> Result<(), Error> {
     let mut tic = TicTacToe::new();
-    let mut turn = Tic::O;
 
     clean_term();
 
-    loop {
-        tic.show();
-        if tic.digest() {
-            println!(
-                "{}{}{} Wins!!",
-                style::Bold,
-                color::Fg(color::Green),
-                turn.next()
-            );
-            break;
-        } else {
-            println!("({}) Enter Row then Col: ", turn);
-            let mut rowstr = String::new();
-            let mut colstr = String::new();
-            stdin().read_line(&mut rowstr).expect("couldnt read");
-            stdin().read_line(&mut colstr).expect("couldnt read");
+    let progargs: Vec<_> = args().collect();
+    let cmd = &progargs[1];
 
-            let row: usize = rowstr.trim().parse().expect("Not an number");
-            let col: usize = colstr.trim().parse().expect("Not an number");
+    match cmd.as_str() {
+        "serve" => {
+            let turn = Tic::O;
 
-            clean_term();
-            let res = tic.set(col, row, turn);
+            let loopback = Ipv4Addr::new(127, 0, 0, 1);
+            let socket = SocketAddrV4::new(loopback, 7692);
+            let listener = TcpListener::bind(socket)?;
+            let port = listener.local_addr()?;
 
-            if res.is_ok() {
-                turn = turn.next()
+            println!("Listening on {}, waiting for other player...", port);
+            let (mut stream, addr) = listener.accept()?; //block  until requested
+
+            println!("Connection received! {:?} is sending data.", addr);
+
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+
+            loop {
+                clean_term();
+
+                let mut input = String::new();
+                let _ = reader.read_line(&mut input)?;
+                let (x, y) = process_net_input(&input);
+                if let Ok(_) = tic.set(x, y, turn.next()) {}
+
+                if tic.digest() {
+                    println!(
+                        "{}{}{} Wins!!",
+                        style::Bold,
+                        color::Fg(color::Green),
+                        turn.next()
+                    );
+                    break;
+                }
+
+                tic.show();
+
+                println!("({}) Enter Row then Col: ", turn);
+                let mut input = String::new();
+                stdin().read_line(&mut input)?;
+
+                let (mut x, mut y) = process_net_input(&input);
+                while let Err(_) = tic.set(x, y, turn) {
+                    clean_term();
+
+                    tic.show();
+
+                    println!("({}) Enter Row then Col: ", turn);
+                    let mut input = String::new();
+                    stdin().read_line(&mut input)?;
+
+                    (x, y) = process_net_input(&input);
+                }
+
+                clean_term();
+
+                tic.show();
+
+                stream.write_all(input.as_bytes())?;
+                stream.flush()?;
+
+                if tic.digest() {
+                    println!("{}{}{} Wins!!", style::Bold, color::Fg(color::Green), turn);
+                    break;
+                }
             }
+
+            Ok(())
         }
+
+        "join" => {
+            let turn = Tic::X;
+
+            let addr = &progargs[2];
+            let mut stream = TcpStream::connect(addr)?;
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+
+            loop {
+                tic.show();
+                println!("({}) Enter Row then Col: ", turn);
+
+                let mut input = String::new();
+                stdin().read_line(&mut input)?;
+
+                let (mut x, mut y) = process_net_input(&input);
+                while let Err(_) = tic.set(x, y, turn) {
+                    clean_term();
+
+                    tic.show();
+
+                    println!("({}) Enter Row then Col: ", turn);
+                    let mut input = String::new();
+                    stdin().read_line(&mut input)?;
+
+                    (x, y) = process_net_input(&input);
+                }
+
+                stream.write_all(input.as_bytes())?;
+                stream.flush()?;
+
+                clean_term();
+
+                if tic.digest() {
+                    println!("{}{}{} Wins!!", style::Bold, color::Fg(color::Green), turn);
+                    break;
+                }
+
+                let mut input = String::new();
+                let _ = reader.read_line(&mut input)?;
+
+                let (x, y) = process_net_input(&input);
+                if let Ok(_) = tic.set(x, y, turn.next()) {}
+
+                if tic.digest() {
+                    println!(
+                        "{}{}{} Wins!!",
+                        style::Bold,
+                        color::Fg(color::Green),
+                        turn.next()
+                    );
+                    break;
+                }
+            }
+
+            Ok(())
+        }
+        _ => Ok(()),
     }
 }
